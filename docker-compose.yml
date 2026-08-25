@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: filmow_mongo
+    restart: always
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  app:
+    build: .
+    container_name: filmow_app
+    restart: always
+    ports:
+      - "5001:5000"
+    environment:
+      - PORT=5000
+      - MONGODB_URI=mongodb://mongo:27017/filmow
+      - JWT_SECRET=filmow_super_secret_key_2026_jwt_token
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

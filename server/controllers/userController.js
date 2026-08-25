@@ -1,85 +1,102 @@
-const pool = require('../config/db');
+const User = require('../models/User');
+const UserMovie = require('../models/UserMovie');
+const Movie = require('../models/Movie');
+const Follower = require('../models/Follower');
 
 exports.getProfile = async (req, res) => {
   try {
     const { username } = req.params;
 
-    const [users] = await pool.query(
-      'SELECT id, name, username, email, avatar_url, bio, created_at FROM users WHERE username = ?',
-      [username]
-    );
+    const user = await User.findOne({ username: username.toLowerCase() }).select('-password_hash');
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(404).json({ error: 'Perfil de usuário não encontrado.' });
     }
 
-    const user = users[0];
+    // User Movie Stats
+    const userMovies = await UserMovie.find({ user_id: user._id }).populate('movie_id');
 
-    // Stats: Total Watched, Want to Watch, Favorites, Estimated Hours
-    const [stats] = await pool.query(`
-      SELECT
-        COUNT(CASE WHEN status = 'JA_VI' THEN 1 END) AS total_watched,
-        COUNT(CASE WHEN status = 'QUERO_VER' THEN 1 END) AS total_want,
-        COUNT(CASE WHEN is_favorite = TRUE THEN 1 END) AS total_favorites,
-        COUNT(CASE WHEN review IS NOT NULL AND CHAR_LENGTH(TRIM(review)) > 0 THEN 1 END) AS total_reviews,
-        COALESCE(SUM(CASE WHEN status = 'JA_VI' THEN m.runtime ELSE 0 END), 0) AS total_minutes
-      FROM user_movies um
-      JOIN movies m ON m.id = um.movie_id
-      WHERE um.user_id = ?
-    `, [user.id]);
+    let totalWatched = 0;
+    let totalWant = 0;
+    let totalFavorites = 0;
+    let totalReviews = 0;
+    let totalMinutes = 0;
+    const ratingMap = {};
 
-    const totalMinutes = stats[0].total_minutes || 0;
+    userMovies.forEach((um) => {
+      if (um.status === 'JA_VI') {
+        totalWatched++;
+        const movieRuntime = um.movie_id && um.movie_id.runtime ? um.movie_id.runtime : 120;
+        totalMinutes += movieRuntime;
+      }
+      if (um.status === 'QUERO_VER') totalWant++;
+      if (um.is_favorite) totalFavorites++;
+      if (um.review && um.review.trim().length > 0) totalReviews++;
+      if (um.rating !== null && um.rating !== undefined) {
+        ratingMap[um.rating] = (ratingMap[um.rating] || 0) + 1;
+      }
+    });
+
     const totalHours = Math.round(totalMinutes / 60);
 
-    // Rating Distribution (0.5 to 5.0)
-    const [ratingDist] = await pool.query(`
-      SELECT rating, COUNT(*) AS count
-      FROM user_movies
-      WHERE user_id = ? AND rating IS NOT NULL
-      GROUP BY rating
-      ORDER BY rating ASC
-    `, [user.id]);
+    const ratingDistribution = Object.keys(ratingMap)
+      .sort((a, b) => Number(a) - Number(b))
+      .map((r) => ({ rating: Number(r), count: ratingMap[r] }));
 
-    // Top 4 Favorite Movies
-    const [favorites] = await pool.query(`
-      SELECT m.id, m.title, m.poster_path, m.release_date, m.vote_average, um.rating
-      FROM user_movies um
-      JOIN movies m ON m.id = um.movie_id
-      WHERE um.user_id = ? AND um.is_favorite = TRUE
-      ORDER BY um.updated_at DESC
-      LIMIT 4
-    `, [user.id]);
+    // Favorites (Top 4)
+    const favoriteDocs = await UserMovie.find({ user_id: user._id, is_favorite: true })
+      .sort({ updated_at: -1 })
+      .limit(4);
+
+    const favorites = await Promise.all(
+      favoriteDocs.map(async (doc) => {
+        const m = await Movie.findById(doc.movie_id);
+        return {
+          id: doc.movie_id,
+          title: m ? m.title : 'Filme',
+          poster_path: m ? m.poster_path : null,
+          release_date: m ? m.release_date : null,
+          vote_average: m ? m.vote_average : 0,
+          rating: doc.rating
+        };
+      })
+    );
 
     // Followers & Following Count
-    const [socialCounts] = await pool.query(`
-      SELECT
-        (SELECT COUNT(*) FROM user_followers WHERE following_id = ?) AS followers_count,
-        (SELECT COUNT(*) FROM user_followers WHERE follower_id = ?) AS following_count
-    `, [user.id, user.id]);
+    const followersCount = await Follower.countDocuments({ following_id: user._id });
+    const followingCount = await Follower.countDocuments({ follower_id: user._id });
 
     // Is current user following this profile?
     let isFollowing = false;
-    if (req.user && req.user.id !== user.id) {
-      const [followCheck] = await pool.query(
-        'SELECT 1 FROM user_followers WHERE follower_id = ? AND following_id = ?',
-        [req.user.id, user.id]
-      );
-      isFollowing = followCheck.length > 0;
+    if (req.user && String(req.user.id) !== String(user._id)) {
+      const followCheck = await Follower.findOne({
+        follower_id: req.user.id,
+        following_id: user._id
+      });
+      isFollowing = Boolean(followCheck);
     }
 
     return res.json({
-      user,
+      user: {
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        avatar_url: user.avatar_url,
+        bio: user.bio,
+        created_at: user.created_at
+      },
       stats: {
-        total_watched: stats[0].total_watched || 0,
-        total_want: stats[0].total_want || 0,
-        total_favorites: stats[0].total_favorites || 0,
-        total_reviews: stats[0].total_reviews || 0,
+        total_watched: totalWatched,
+        total_want: totalWant,
+        total_favorites: totalFavorites,
+        total_reviews: totalReviews,
         total_hours: totalHours,
-        rating_distribution: ratingDist
+        rating_distribution: ratingDistribution
       },
       social: {
-        followers_count: socialCounts[0].followers_count || 0,
-        following_count: socialCounts[0].following_count || 0,
+        followers_count: followersCount,
+        following_count: followingCount,
         is_following: isFollowing
       },
       favorites
@@ -95,31 +112,47 @@ exports.getUserMovies = async (req, res) => {
     const { username } = req.params;
     const { status } = req.query; // 'JA_VI', 'QUERO_VER', 'FAVORITOS', 'REVIEWS'
 
-    const [users] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
-    if (users.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' });
-    const userId = users[0].id;
+    const user = await User.findOne({ username: username.toLowerCase() });
+    if (!user) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
-    let query = `
-      SELECT um.*, m.title, m.original_title, m.poster_path, m.backdrop_path, m.release_date, m.vote_average
-      FROM user_movies um
-      JOIN movies m ON m.id = um.movie_id
-      WHERE um.user_id = ?
-    `;
-    const params = [userId];
+    const query = { user_id: user._id };
 
     if (status === 'FAVORITOS') {
-      query += ' AND um.is_favorite = TRUE';
+      query.is_favorite = true;
     } else if (status === 'REVIEWS') {
-      query += ' AND um.review IS NOT NULL AND CHAR_LENGTH(TRIM(um.review)) > 0';
+      query.review = { $exists: true, $ne: null, $regex: /\S/ };
     } else if (status) {
-      query += ' AND um.status = ?';
-      params.push(status);
+      query.status = status;
     }
 
-    query += ' ORDER BY um.updated_at DESC';
+    const userMovies = await UserMovie.find(query).sort({ updated_at: -1 });
 
-    const [movies] = await pool.query(query, params);
-    return res.json(movies);
+    const moviesList = await Promise.all(
+      userMovies.map(async (um) => {
+        const m = await Movie.findById(um.movie_id);
+        return {
+          id: um._id,
+          user_id: um.user_id,
+          movie_id: um.movie_id,
+          status: um.status,
+          rating: um.rating,
+          review: um.review,
+          contains_spoilers: um.contains_spoilers,
+          is_favorite: um.is_favorite,
+          watched_at: um.watched_at,
+          created_at: um.created_at,
+          updated_at: um.updated_at,
+          title: m ? m.title : 'Filme',
+          original_title: m ? m.original_title : '',
+          poster_path: m ? m.poster_path : null,
+          backdrop_path: m ? m.backdrop_path : null,
+          release_date: m ? m.release_date : '',
+          vote_average: m ? m.vote_average : 0
+        };
+      })
+    );
+
+    return res.json(moviesList);
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao buscar filmes do usuário.' });
   }
@@ -130,26 +163,23 @@ exports.toggleFollow = async (req, res) => {
     const targetUserId = req.params.id;
     const currentUserId = req.user.id;
 
-    if (Number(targetUserId) === Number(currentUserId)) {
+    if (String(targetUserId) === String(currentUserId)) {
       return res.status(400).json({ error: 'Você não pode seguir a si mesmo.' });
     }
 
-    const [check] = await pool.query(
-      'SELECT * FROM user_followers WHERE follower_id = ? AND following_id = ?',
-      [currentUserId, targetUserId]
-    );
+    const existing = await Follower.findOne({
+      follower_id: currentUserId,
+      following_id: targetUserId
+    });
 
-    if (check.length > 0) {
-      await pool.query(
-        'DELETE FROM user_followers WHERE follower_id = ? AND following_id = ?',
-        [currentUserId, targetUserId]
-      );
+    if (existing) {
+      await Follower.deleteOne({ _id: existing._id });
       return res.json({ following: false, message: 'Deixou de seguir o usuário.' });
     } else {
-      await pool.query(
-        'INSERT INTO user_followers (follower_id, following_id) VALUES (?, ?)',
-        [currentUserId, targetUserId]
-      );
+      await Follower.create({
+        follower_id: currentUserId,
+        following_id: targetUserId
+      });
       return res.json({ following: true, message: 'Agora você está seguindo este usuário.' });
     }
   } catch (err) {
@@ -162,10 +192,7 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user.id;
     const { name, bio, avatar_url } = req.body;
 
-    await pool.query(
-      'UPDATE users SET name = ?, bio = ?, avatar_url = ? WHERE id = ?',
-      [name, bio, avatar_url, userId]
-    );
+    await User.findByIdAndUpdate(userId, { name, bio, avatar_url });
 
     return res.json({ message: 'Perfil atualizado com sucesso!' });
   } catch (err) {

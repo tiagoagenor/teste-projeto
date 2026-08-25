@@ -1,4 +1,5 @@
-const pool = require('../config/db');
+const Like = require('../models/Like');
+const Comment = require('../models/Comment');
 
 exports.toggleLike = async (req, res) => {
   try {
@@ -9,19 +10,21 @@ exports.toggleLike = async (req, res) => {
       return res.status(400).json({ error: 'target_type e target_id são obrigatórios.' });
     }
 
-    const [existing] = await pool.query(
-      'SELECT id FROM likes WHERE user_id = ? AND target_type = ? AND target_id = ?',
-      [userId, target_type, target_id]
-    );
+    const existing = await Like.findOne({
+      user_id: userId,
+      target_type,
+      target_id
+    });
 
-    if (existing.length > 0) {
-      await pool.query('DELETE FROM likes WHERE id = ?', [existing[0].id]);
+    if (existing) {
+      await Like.deleteOne({ _id: existing._id });
       return res.json({ liked: false, message: 'Curtida removida.' });
     } else {
-      await pool.query(
-        'INSERT INTO likes (user_id, target_type, target_id) VALUES (?, ?, ?)',
-        [userId, target_type, target_id]
-      );
+      await Like.create({
+        user_id: userId,
+        target_type,
+        target_id
+      });
       return res.json({ liked: true, message: 'Curtido com sucesso!' });
     }
   } catch (err) {
@@ -38,12 +41,14 @@ exports.addComment = async (req, res) => {
       return res.status(400).json({ error: 'Conteúdo do comentário não pode ser vazio.' });
     }
 
-    const [result] = await pool.query(
-      'INSERT INTO comments (user_id, target_type, target_id, content) VALUES (?, ?, ?, ?)',
-      [userId, target_type || 'REVIEW', target_id, content.trim()]
-    );
+    const newComment = await Comment.create({
+      user_id: userId,
+      target_type: target_type || 'REVIEW',
+      target_id,
+      content: content.trim()
+    });
 
-    return res.status(201).json({ message: 'Comentário publicado!', commentId: result.insertId });
+    return res.status(201).json({ message: 'Comentário publicado!', commentId: newComment._id });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao publicar comentário.' });
   }
@@ -53,13 +58,22 @@ exports.getComments = async (req, res) => {
   try {
     const { target_type, target_id } = req.query;
 
-    const [comments] = await pool.query(`
-      SELECT c.*, u.name AS user_name, u.username, u.avatar_url
-      FROM comments c
-      JOIN users u ON u.id = c.user_id
-      WHERE c.target_type = ? AND c.target_id = ?
-      ORDER BY c.created_at ASC
-    `, [target_type || 'REVIEW', target_id]);
+    const commentDocs = await Comment.find({
+      target_type: target_type || 'REVIEW',
+      target_id
+    })
+      .populate('user_id', 'name username avatar_url')
+      .sort({ created_at: 1 });
+
+    const comments = commentDocs.map((c) => ({
+      id: c._id,
+      content: c.content,
+      created_at: c.created_at,
+      user_id: c.user_id ? c.user_id._id : null,
+      user_name: c.user_id ? c.user_id.name : 'Anônimo',
+      username: c.user_id ? c.user_id.username : '',
+      avatar_url: c.user_id ? c.user_id.avatar_url : ''
+    }));
 
     return res.json(comments);
   } catch (err) {

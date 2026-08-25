@@ -1,16 +1,16 @@
-const mysql = require('mysql2/promise');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'root_jamees',
-  database: process.env.DB_NAME || 'filme',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  charset: 'utf8mb4'
-});
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/filmow';
 
-module.exports = pool;
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(MONGODB_URI);
+    console.log(`✅ MongoDB Conectado: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`❌ Erro na conexão com o MongoDB: ${error.message}`);
+  }
+};
+
+module.exports = connectDB;
+

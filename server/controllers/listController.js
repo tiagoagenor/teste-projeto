@@ -1,39 +1,33 @@
-const pool = require('../config/db');
+const List = require('../models/List');
+const Movie = require('../models/Movie');
+const Like = require('../models/Like');
 
 exports.getLists = async (req, res) => {
   try {
-    const [lists] = await pool.query(`
-      SELECT 
-        l.id,
-        l.title,
-        l.description,
-        l.created_at,
-        u.id AS user_id,
-        u.name AS user_name,
-        u.username,
-        u.avatar_url,
-        COUNT(lm.movie_id) AS movie_count,
-        (SELECT COUNT(*) FROM likes WHERE target_type = 'LIST' AND target_id = l.id) AS likes_count
-      FROM lists l
-      JOIN users u ON u.id = l.user_id
-      LEFT JOIN list_movies lm ON lm.list_id = l.id
-      WHERE l.is_private = FALSE
-      GROUP BY l.id
-      ORDER BY l.created_at DESC
-      LIMIT 20
-    `);
+    const listDocs = await List.find({ is_private: false })
+      .populate('user_id', 'name username avatar_url')
+      .sort({ created_at: -1 })
+      .limit(20);
 
-    // For each list, fetch first 4 movie posters for preview grid
-    for (const list of lists) {
-      const [posters] = await pool.query(`
-        SELECT m.poster_path, m.title 
-        FROM list_movies lm
-        JOIN movies m ON m.id = lm.movie_id
-        WHERE lm.list_id = ?
-        LIMIT 4
-      `, [list.id]);
-      list.posters = posters;
-    }
+    const lists = await Promise.all(
+      listDocs.map(async (list) => {
+        const likesCount = await Like.countDocuments({ target_type: 'LIST', target_id: list._id });
+        const movieDocs = await Movie.find({ _id: { $in: list.movie_ids.slice(0, 4) } }).select('poster_path title');
+        return {
+          id: list._id,
+          title: list.title,
+          description: list.description,
+          created_at: list.created_at,
+          user_id: list.user_id ? list.user_id._id : null,
+          user_name: list.user_id ? list.user_id.name : 'Anônimo',
+          username: list.user_id ? list.user_id.username : '',
+          avatar_url: list.user_id ? list.user_id.avatar_url : '',
+          movie_count: list.movie_ids ? list.movie_ids.length : 0,
+          likes_count: likesCount,
+          posters: movieDocs
+        };
+      })
+    );
 
     return res.json(lists);
   } catch (err) {
@@ -51,20 +45,15 @@ exports.createList = async (req, res) => {
       return res.status(400).json({ error: 'Título da lista é obrigatório.' });
     }
 
-    const [result] = await pool.query(
-      'INSERT INTO lists (user_id, title, description, is_private) VALUES (?, ?, ?, ?)',
-      [userId, title, description || null, is_private ? true : false]
-    );
+    const newList = await List.create({
+      user_id: userId,
+      title,
+      description: description || null,
+      is_private: Boolean(is_private),
+      movie_ids: Array.isArray(movie_ids) ? movie_ids.map(Number) : []
+    });
 
-    const listId = result.insertId;
-
-    if (movie_ids && Array.isArray(movie_ids)) {
-      for (const movieId of movie_ids) {
-        await pool.query('INSERT IGNORE INTO list_movies (list_id, movie_id) VALUES (?, ?)', [listId, movieId]);
-      }
-    }
-
-    return res.status(201).json({ message: 'Lista criada com sucesso!', listId });
+    return res.status(201).json({ message: 'Lista criada com sucesso!', listId: newList._id });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao criar lista.' });
   }
@@ -74,29 +63,25 @@ exports.getListDetails = async (req, res) => {
   try {
     const listId = req.params.id;
 
-    const [lists] = await pool.query(`
-      SELECT l.*, u.name AS user_name, u.username, u.avatar_url
-      FROM lists l
-      JOIN users u ON u.id = l.user_id
-      WHERE l.id = ?
-    `, [listId]);
+    const list = await List.findById(listId).populate('user_id', 'name username avatar_url');
 
-    if (lists.length === 0) {
+    if (!list) {
       return res.status(404).json({ error: 'Lista não encontrada.' });
     }
 
-    const list = lists[0];
+    const movies = await Movie.find({ _id: { $in: list.movie_ids } });
 
-    const [movies] = await pool.query(`
-      SELECT m.*, lm.added_at
-      FROM list_movies lm
-      JOIN movies m ON m.id = lm.movie_id
-      WHERE lm.list_id = ?
-      ORDER BY lm.added_at ASC
-    `, [listId]);
-
-    list.movies = movies;
-    return res.json(list);
+    return res.json({
+      id: list._id,
+      title: list.title,
+      description: list.description,
+      is_private: list.is_private,
+      created_at: list.created_at,
+      user_name: list.user_id ? list.user_id.name : 'Anônimo',
+      username: list.user_id ? list.user_id.username : '',
+      avatar_url: list.user_id ? list.user_id.avatar_url : '',
+      movies
+    });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao buscar detalhes da lista.' });
   }
@@ -108,12 +93,17 @@ exports.addMovieToList = async (req, res) => {
     const { movie_id } = req.body;
     const userId = req.user.id;
 
-    const [check] = await pool.query('SELECT user_id FROM lists WHERE id = ?', [listId]);
-    if (check.length === 0 || check[0].user_id !== userId) {
+    const list = await List.findById(listId);
+    if (!list || String(list.user_id) !== String(userId)) {
       return res.status(403).json({ error: 'Permissão negada.' });
     }
 
-    await pool.query('INSERT IGNORE INTO list_movies (list_id, movie_id) VALUES (?, ?)', [listId, movie_id]);
+    const numMovieId = Number(movie_id);
+    if (!list.movie_ids.includes(numMovieId)) {
+      list.movie_ids.push(numMovieId);
+      await list.save();
+    }
+
     return res.json({ message: 'Filme adicionado à lista.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao adicionar filme à lista.' });

@@ -1,6 +1,6 @@
-const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'filmow_super_secret_key_2026_jwt_token';
@@ -16,30 +16,44 @@ exports.register = async (req, res) => {
     const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
 
     // Check existing email or username
-    const [existing] = await pool.query(
-      'SELECT id FROM users WHERE email = ? OR username = ?',
-      [email, cleanUsername]
-    );
+    const existingUser = await User.findOne({
+      $or: [{ email: email.toLowerCase() }, { username: cleanUsername }]
+    });
 
-    if (existing.length > 0) {
+    if (existingUser) {
       return res.status(400).json({ error: 'Email ou nome de usuário já cadastrado.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const avatar = avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`;
 
-    const [result] = await pool.query(
-      'INSERT INTO users (name, username, email, password_hash, avatar_url, bio) VALUES (?, ?, ?, ?, ?, ?)',
-      [name, cleanUsername, email, passwordHash, avatar, bio || 'Adora assistir e avaliar filmes.']
-    );
+    const user = await User.create({
+      name,
+      username: cleanUsername,
+      email: email.toLowerCase(),
+      password_hash: passwordHash,
+      avatar_url: avatar,
+      bio: bio || 'Adora assistir e avaliar filmes.'
+    });
 
-    const userId = result.insertId;
-    const token = jwt.sign({ id: userId, username: cleanUsername, name }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { id: user._id, username: user.username, name: user.name, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     return res.status(201).json({
       message: 'Usuário cadastrado com sucesso!',
       token,
-      user: { id: userId, name, username: cleanUsername, email, avatar_url: avatar, bio: bio || '' }
+      user: {
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        avatar_url: user.avatar_url,
+        bio: user.bio,
+        role: user.role
+      }
     });
   } catch (err) {
     console.error('Erro no registro:', err);
@@ -55,16 +69,15 @@ exports.login = async (req, res) => {
       return res.status(400).json({ error: 'Informe seu login (email ou username) e senha.' });
     }
 
-    const [users] = await pool.query(
-      'SELECT * FROM users WHERE email = ? OR username = ?',
-      [login, login.trim().toLowerCase()]
-    );
+    const cleanLogin = login.trim().toLowerCase();
+    const user = await User.findOne({
+      $or: [{ email: cleanLogin }, { username: cleanLogin }]
+    });
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'Credenciais inválidas. Usuário não encontrado.' });
     }
 
-    const user = users[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
@@ -72,7 +85,7 @@ exports.login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, name: user.name, role: user.role },
+      { id: user._id, username: user.username, name: user.name, role: user.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -81,7 +94,7 @@ exports.login = async (req, res) => {
       message: 'Login realizado com sucesso!',
       token,
       user: {
-        id: user.id,
+        id: user._id,
         name: user.name,
         username: user.username,
         email: user.email,
@@ -98,16 +111,22 @@ exports.login = async (req, res) => {
 
 exports.getMe = async (req, res) => {
   try {
-    const [users] = await pool.query(
-      'SELECT id, name, username, email, avatar_url, bio, role, created_at FROM users WHERE id = ?',
-      [req.user.id]
-    );
+    const user = await User.findById(req.user.id).select('-password_hash');
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
 
-    return res.json(users[0]);
+    return res.json({
+      id: user._id,
+      name: user.name,
+      username: user.username,
+      email: user.email,
+      avatar_url: user.avatar_url,
+      bio: user.bio,
+      role: user.role,
+      created_at: user.created_at
+    });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao buscar dados do usuário.' });
   }

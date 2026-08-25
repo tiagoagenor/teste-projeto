@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 
+const connectDB = require('./config/db');
 const initDb = require('./config/initDb');
 const apiRoutes = require('./routes/api');
 
@@ -37,5 +38,7 @@ app.use((req, res, next) => {
 app.listen(PORT, async () => {
   console.log(`\n🚀 Servidor do Filmow Clone rodando na porta ${PORT}`);
   console.log(`🌐 API disponível em: http://localhost:${PORT}/api`);
+  await connectDB();
   await initDb();
 });
+

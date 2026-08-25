@@ -1,5 +1,6 @@
 const tmdbService = require('../services/tmdbService');
-const pool = require('../config/db');
+const UserMovie = require('../models/UserMovie');
+const Like = require('../models/Like');
 
 exports.getPopular = async (req, res) => {
   try {
@@ -41,67 +42,86 @@ exports.search = async (req, res) => {
 
 exports.getMovieDetails = async (req, res) => {
   try {
-    const movieId = req.params.id;
+    const movieId = Number(req.params.id);
     const movie = await tmdbService.getMovieDetails(movieId);
 
     if (!movie) {
       return res.status(404).json({ error: 'Filme não encontrado.' });
     }
 
-    // Get Community stats for this movie (Average User Rating & Rating Counts)
-    const [stats] = await pool.query(`
-      SELECT 
-        AVG(rating) AS community_rating,
-        COUNT(rating) AS total_ratings,
-        SUM(CASE WHEN status = 'JA_VI' THEN 1 ELSE 0 END) AS watched_count,
-        SUM(CASE WHEN status = 'QUERO_VER' THEN 1 ELSE 0 END) AS want_count,
-        SUM(CASE WHEN is_favorite = TRUE THEN 1 ELSE 0 END) AS favorite_count
-      FROM user_movies
-      WHERE movie_id = ?
-    `, [movieId]);
+    // Community Stats
+    const userMovies = await UserMovie.find({ movie_id: movieId });
 
-    // Get Recent Community Reviews for this movie
-    const [reviews] = await pool.query(`
-      SELECT 
-        um.id,
-        um.rating,
-        um.review,
-        um.contains_spoilers,
-        um.is_favorite,
-        um.created_at,
-        u.id AS user_id,
-        u.name AS user_name,
-        u.username,
-        u.avatar_url,
-        (SELECT COUNT(*) FROM likes WHERE target_type = 'REVIEW' AND target_id = um.id) AS likes_count
-      FROM user_movies um
-      JOIN users u ON u.id = um.user_id
-      WHERE um.movie_id = ? AND um.review IS NOT NULL AND CHAR_LENGTH(TRIM(um.review)) > 0
-      ORDER BY um.created_at DESC
-      LIMIT 10
-    `, [movieId]);
+    let totalRatingsCount = 0;
+    let totalRatingsSum = 0;
+    let watchedCount = 0;
+    let wantCount = 0;
+    let favoriteCount = 0;
 
-    // Check current user's interaction if authenticated
+    userMovies.forEach((um) => {
+      if (um.rating !== null && um.rating !== undefined) {
+        totalRatingsCount++;
+        totalRatingsSum += um.rating;
+      }
+      if (um.status === 'JA_VI') watchedCount++;
+      if (um.status === 'QUERO_VER') wantCount++;
+      if (um.is_favorite) favoriteCount++;
+    });
+
+    const avgRating = totalRatingsCount > 0 ? (totalRatingsSum / totalRatingsCount).toFixed(1) : null;
+
+    // Community Reviews for this movie
+    const reviewDocs = await UserMovie.find({
+      movie_id: movieId,
+      review: { $exists: true, $ne: null, $regex: /\S/ }
+    })
+      .populate('user_id', 'name username avatar_url')
+      .sort({ created_at: -1 })
+      .limit(10);
+
+    const reviews = await Promise.all(
+      reviewDocs.map(async (doc) => {
+        const likesCount = await Like.countDocuments({ target_type: 'REVIEW', target_id: doc._id });
+        return {
+          id: doc._id,
+          rating: doc.rating,
+          review: doc.review,
+          contains_spoilers: doc.contains_spoilers,
+          is_favorite: doc.is_favorite,
+          created_at: doc.created_at,
+          user_id: doc.user_id ? doc.user_id._id : null,
+          user_name: doc.user_id ? doc.user_id.name : 'Anônimo',
+          username: doc.user_id ? doc.user_id.username : '',
+          avatar_url: doc.user_id ? doc.user_id.avatar_url : '',
+          likes_count: likesCount
+        };
+      })
+    );
+
+    // User's interaction if logged in
     let userInteraction = null;
     if (req.user) {
-      const [userRows] = await pool.query(`
-        SELECT status, rating, review, contains_spoilers, is_favorite, watched_at
-        FROM user_movies
-        WHERE user_id = ? AND movie_id = ?
-      `, [req.user.id, movieId]);
-      if (userRows.length > 0) {
-        userInteraction = userRows[0];
+      const um = await UserMovie.findOne({ user_id: req.user.id, movie_id: movieId });
+      if (um) {
+        userInteraction = {
+          status: um.status,
+          rating: um.rating,
+          review: um.review,
+          contains_spoilers: um.contains_spoilers,
+          is_favorite: um.is_favorite,
+          watched_at: um.watched_at
+        };
       }
     }
 
     return res.json({
       ...movie,
       community_stats: {
-        rating: stats[0].community_rating ? Number(stats[0].community_rating).toFixed(1) : null,
-        total_ratings: stats[0].total_ratings || 0,
-        watched_count: stats[0].watched_count || 0,
-        want_count: stats[0].want_count || 0,
-        favorite_count: stats[0].favorite_count || 0
+        rating: avgRating,
+        total_ratings: totalRatingsCount,
+        watched_count: watchedCount,
+        want_count: wantCount,
+        favorite_count: favoriteCount
       },
       reviews,
       user_interaction: userInteraction
@@ -118,33 +138,25 @@ exports.interactWithMovie = async (req, res) => {
     const userId = req.user.id;
     const { status, rating, review, contains_spoilers, is_favorite } = req.body;
 
-    // Ensure movie exists in MySQL cache first
+    // Cache movie first
     await tmdbService.getMovieDetails(movieId);
 
     const watchedAt = status === 'JA_VI' ? new Date() : null;
 
-    // UPSERT into user_movies
-    await pool.query(`
-      INSERT INTO user_movies (user_id, movie_id, status, rating, review, contains_spoilers, is_favorite, watched_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        status = VALUES(status),
-        rating = VALUES(rating),
-        review = VALUES(review),
-        contains_spoilers = VALUES(contains_spoilers),
-        is_favorite = VALUES(is_favorite),
-        watched_at = COALESCE(VALUES(watched_at), watched_at),
-        updated_at = CURRENT_TIMESTAMP
-    `, [
-      userId,
-      movieId,
-      status || 'JA_VI',
-      rating !== undefined && rating !== null && rating !== '' ? Number(rating) : null,
-      review || null,
-      contains_spoilers ? true : false,
-      is_favorite ? true : false,
-      watchedAt
-    ]);
+    await UserMovie.findOneAndUpdate(
+      { user_id: userId, movie_id: movieId },
+      {
+        user_id: userId,
+        movie_id: movieId,
+        status: status || 'JA_VI',
+        rating: rating !== undefined && rating !== null && rating !== '' ? Number(rating) : null,
+        review: review || null,
+        contains_spoilers: Boolean(contains_spoilers),
+        is_favorite: Boolean(is_favorite),
+        watched_at: watchedAt
+      },
+      { upsert: true, new: true }
+    );
 
     return res.json({ message: 'Interação registrada com sucesso!' });
   } catch (err) {
@@ -155,10 +167,10 @@ exports.interactWithMovie = async (req, res) => {
 
 exports.removeInteraction = async (req, res) => {
   try {
-    const movieId = req.params.id;
+    const movieId = Number(req.params.id);
     const userId = req.user.id;
 
-    await pool.query('DELETE FROM user_movies WHERE user_id = ? AND movie_id = ?', [userId, movieId]);
+    await UserMovie.deleteOne({ user_id: userId, movie_id: movieId });
     return res.json({ message: 'Marcação removida.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao remover interação.' });

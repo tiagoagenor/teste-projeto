@@ -1,16 +1,18 @@
+const connectDB = require('../config/db');
 const initDb = require('../config/initDb');
-const pool = require('../config/db');
+const mongoose = require('mongoose');
 
 async function runMigration() {
-  console.log('🚀 Executando migration do banco de dados MySQL...');
+  console.log('🚀 Executando inicialização/semeamento do MongoDB...');
   try {
+    await connectDB();
     await initDb();
-    console.log('🎉 Migration concluída com sucesso!');
+    console.log('🎉 Inicialização concluída com sucesso!');
   } catch (error) {
-    console.error('❌ Erro durante a execução da migration:', error);
+    console.error('❌ Erro durante a execução:', error);
     process.exit(1);
   } finally {
-    await pool.end();
+    await mongoose.connection.close();
     process.exit(0);
   }
 }

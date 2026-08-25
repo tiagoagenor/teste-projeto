@@ -1,45 +1,54 @@
-const pool = require('../config/db');
+const UserMovie = require('../models/UserMovie');
+const Movie = require('../models/Movie');
+const Like = require('../models/Like');
+const Comment = require('../models/Comment');
 
 exports.getFeed = async (req, res) => {
   try {
-    let query = `
-      SELECT 
-        um.id AS activity_id,
-        um.status,
-        um.rating,
-        um.review,
-        um.contains_spoilers,
-        um.is_favorite,
-        um.updated_at AS timestamp,
-        u.id AS user_id,
-        u.name AS user_name,
-        u.username,
-        u.avatar_url,
-        m.id AS movie_id,
-        m.title AS movie_title,
-        m.poster_path AS movie_poster,
-        m.release_date AS movie_year,
-        (SELECT COUNT(*) FROM likes WHERE target_type = 'REVIEW' AND target_id = um.id) AS likes_count,
-        (SELECT COUNT(*) FROM comments WHERE target_type = 'REVIEW' AND target_id = um.id) AS comments_count
-    `;
+    const userMovieDocs = await UserMovie.find()
+      .populate('user_id', 'name username avatar_url')
+      .sort({ updated_at: -1 })
+      .limit(20);
 
-    if (req.user) {
-      query += `,
-        (SELECT COUNT(*) FROM likes WHERE target_type = 'REVIEW' AND target_id = um.id AND user_id = ${pool.escape(req.user.id)}) > 0 AS is_liked
-      `;
-    } else {
-      query += `, FALSE AS is_liked `;
-    }
+    const activities = await Promise.all(
+      userMovieDocs.map(async (um) => {
+        const movie = await Movie.findById(um.movie_id);
+        const likesCount = await Like.countDocuments({ target_type: 'REVIEW', target_id: um._id });
+        const commentsCount = await Comment.countDocuments({ target_type: 'REVIEW', target_id: um._id });
 
-    query += `
-      FROM user_movies um
-      JOIN users u ON u.id = um.user_id
-      JOIN movies m ON m.id = um.movie_id
-      ORDER BY um.updated_at DESC
-      LIMIT 20
-    `;
+        let isLiked = false;
+        if (req.user) {
+          const userLike = await Like.findOne({
+            user_id: req.user.id,
+            target_type: 'REVIEW',
+            target_id: um._id
+          });
+          isLiked = Boolean(userLike);
+        }
 
-    const [activities] = await pool.query(query);
+        return {
+          activity_id: um._id,
+          status: um.status,
+          rating: um.rating,
+          review: um.review,
+          contains_spoilers: um.contains_spoilers,
+          is_favorite: um.is_favorite,
+          timestamp: um.updated_at,
+          user_id: um.user_id ? um.user_id._id : null,
+          user_name: um.user_id ? um.user_id.name : 'Anônimo',
+          username: um.user_id ? um.user_id.username : '',
+          avatar_url: um.user_id ? um.user_id.avatar_url : '',
+          movie_id: um.movie_id,
+          movie_title: movie ? movie.title : 'Filme',
+          movie_poster: movie ? movie.poster_path : null,
+          movie_year: movie ? movie.release_date : '',
+          likes_count: likesCount,
+          comments_count: commentsCount,
+          is_liked: isLiked
+        };
+      })
+    );
+
     return res.json(activities);
   } catch (err) {
     console.error('Erro ao buscar feed:', err);
