@@ -10,6 +10,8 @@
     "build": "cd client && npm run build",
     "migrate": "node server/scripts/migrate.js",
     "db:migrate": "node server/scripts/migrate.js",
+    "seed": "node server/scripts/seed1000Movies.js",
+    "dataset:generate": "node server/scripts/generate1000Dataset.js",
     "postinstall": "npm install --prefix client"
   },
   "repository": {

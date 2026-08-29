@@ -43,90 +43,28 @@ async function initDb() {
         bio: 'Fã incondicional de Star Wars e Marvel.'
       });
 
-      // Seed Initial Demo Movies
-      const seedMovies = [
-        {
-          _id: 157336,
-          title: 'Interestelar',
-          original_title: 'Interstellar',
-          poster_path: '/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg',
-          backdrop_path: '/xJHokMbljvjADYdit5fKSuV0Te.jpg',
-          overview: 'As reservas naturais da Terra estão chegando ao fim e um grupo de astronautas recebe a missão de verificar quais planetas oferecem condições para a sobrevivência da espécie humana. Cooper é chamado para liderar o grupo.',
-          release_date: '2014-11-05',
-          runtime: 169,
-          vote_average: 8.4,
-          vote_count: 34500,
-          genres: [{ id: 878, name: 'Ficção Científica' }, { id: 18, name: 'Drama' }, { id: 12, name: 'Aventura' }]
-        },
-        {
-          _id: 27205,
-          title: 'A Origem',
-          original_title: 'Inception',
-          poster_path: '/oYuLEIVWz2OiuhyCY7cW2q33xev.jpg',
-          backdrop_path: '/s3TBrRGB1iav7gFOCNx3H31MoES.jpg',
-          overview: 'Dom Cobb é um ladrão com a rara habilidade de roubar segredos do inconsciente durante o estado de sono. Impedido de retornar para sua família, ele recebe uma oportunidade de redenção.',
-          release_date: '2010-07-15',
-          runtime: 148,
-          vote_average: 8.4,
-          vote_count: 35000,
-          genres: [{ id: 878, name: 'Ficção Científica' }, { id: 28, name: 'Ação' }, { id: 12, name: 'Aventura' }]
-        },
-        {
-          _id: 155,
-          title: 'Batman: O Cavaleiro das Trevas',
-          original_title: 'The Dark Knight',
-          poster_path: '/qJ2tW6WMUDux911r6m7haRef0WH.jpg',
-          backdrop_path: '/nMK2819TyqLnTFiCBD9oYGi2qOp.jpg',
-          overview: 'Após dois anos desde o surgimento do Batman, o crime organizado em Gotham City foi encurralado por Batman, o Tenente James Gordon e o novo Promotor de Justiça Harvey Dent.',
-          release_date: '2008-07-16',
-          runtime: 152,
-          vote_average: 8.5,
-          vote_count: 32000,
-          genres: [{ id: 18, name: 'Drama' }, { id: 28, name: 'Ação' }, { id: 80, name: 'Crime' }]
-        },
-        {
-          _id: 550,
-          title: 'Clube da Luta',
-          original_title: 'Fight Club',
-          poster_path: '/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg',
-          backdrop_path: '/hZkgoQY85KGWFToRHub4ee1wY3C.jpg',
-          overview: 'Um homem deprimido que sofre de insônia conhece um estranho vendedor de sabão chamado Tyler Durden e se vê morando em uma casa caindo aos pedaços.',
-          release_date: '1999-10-15',
-          runtime: 139,
-          vote_average: 8.4,
-          vote_count: 28000,
-          genres: [{ id: 18, name: 'Drama' }, { id: 53, name: 'Thriller' }]
-        },
-        {
-          _id: 680,
-          title: 'Pulp Fiction: Tempo de Violência',
-          original_title: 'Pulp Fiction',
-          poster_path: '/d5iIlFn5s0ImszYzBPb8JPIfbXD.jpg',
-          backdrop_path: '/suaEOtk1N1sgg2MTM7oZd2cfNIk.jpg',
-          overview: 'As vidas de dois assassinos da máfia, um boxeador, a esposa de um gângster e um par de assaltantes se entrelaçam em quatro histórias de violência e redenção.',
-          release_date: '1994-09-10',
-          runtime: 154,
-          vote_average: 8.5,
-          vote_count: 27000,
-          genres: [{ id: 53, name: 'Thriller' }, { id: 80, name: 'Crime' }]
-        },
-        {
-          _id: 238,
-          title: 'O Padrinho',
-          original_title: 'The Godfather',
-          poster_path: '/3bhkrj58Vtu7enYsRolD1fZdja1.jpg',
-          backdrop_path: '/rSPw7tgCH9c6NqICZefy2aUMqC.jpg',
-          overview: 'Em 1945, Don Vito Corleone é o chefe de uma família da máfia nova-iorquina. Quando um rival decide vender drogas em Nova Iorque, Don Vito recusa apoiar o negócio.',
-          release_date: '1972-03-14',
-          runtime: 175,
-          vote_average: 8.7,
-          vote_count: 19000,
-          genres: [{ id: 18, name: 'Drama' }, { id: 80, name: 'Crime' }]
-        }
-      ];
+      // Seed Initial Demo Movies (Dataset de 1000 filmes)
+      const fs = require('fs');
+      const path = require('path');
+      const datasetPath = path.join(__dirname, '../data/movies_dataset_1000.json');
 
-      for (const m of seedMovies) {
-        await Movie.findByIdAndUpdate(m._id, m, { upsert: true, new: true });
+      let seedMovies = [];
+      if (fs.existsSync(datasetPath)) {
+        seedMovies = JSON.parse(fs.readFileSync(datasetPath, 'utf-8'));
+      }
+
+      console.log(`📦 Semeando ${seedMovies.length} filmes no MongoDB...`);
+
+      if (seedMovies.length > 0) {
+        const bulkOps = seedMovies.map((m) => ({
+          updateOne: {
+            filter: { _id: m._id },
+            update: { $set: m },
+            upsert: true
+          }
+        }));
+        await Movie.bulkWrite(bulkOps);
+        console.log(`✨ ${seedMovies.length} filmes gravados no MongoDB com sucesso!`);
       }
 
       // Seed Demo User Interactions
